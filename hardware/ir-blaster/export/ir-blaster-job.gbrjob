@@ -5,7 +5,7 @@
       "Application": "Pcbnew",
       "Version": "8.0.2"
     },
-    "CreationDate": "2024-08-04T11:24:20+02:00"
+    "CreationDate": "2024-08-10T10:20:15+02:00"
   },
   "GeneralSpecs": {
     "ProjectId": {
@@ -14,8 +14,8 @@
       "Revision": "rev?"
     },
     "Size": {
-      "X": 56.25,
-      "Y": 52.25
+      "X": 35.25,
+      "Y": 26.25
     },
     "LayerNumber": 2,
     "BoardThickness": 1.6,
@@ -24,10 +24,10 @@
   "DesignRules": [
     {
       "Layers": "Outer",
-      "PadToPad": 0.25,
-      "PadToTrack": 0.25,
+      "PadToPad": 0.3,
+      "PadToTrack": 0.3,
       "TrackToTrack": 0.1,
-      "MinLineWidth": 0.3,
+      "MinLineWidth": 0.6,
       "TrackToRegion": 0.5,
       "RegionToRegion": 0.5
     }
