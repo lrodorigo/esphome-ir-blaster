@@ -120,8 +120,9 @@ class RadiatorValve:
 
     async def write_comfort_mode(self):
         COMFORT_MODE = 0x01
-        self.log.info(f"[{self.mac_str}] Trying to write comfort mode")
         SET_KEY_LOCK = 0x01
+
+        self.log.info(f"[{self.mac_str}] Trying to write comfort mode")
         msg = [COMFORT_MODE,  # 1 mode
                0x00,  # 2 - reserved
                0x00,  # 3 host computer op. sign
