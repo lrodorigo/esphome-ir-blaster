@@ -7,26 +7,28 @@ import aioesphomeapi
 from aioesphomeapi import BluetoothLEAdvertisement
 
 WRITE_CHARACTERISTIC_UUID = "0000ffe9-0000-1000-8000-00805f9b34fb"
-logging.basicConfig(level=logging.INFO, datefmt='%Y-%m-%d %H:%M:%S')
+logging.basicConfig(level=logging.DEBUG, datefmt='%Y-%m-%d %H:%M:%S')
 logging.getLogger("aioesphomeapi").setLevel(logging.WARNING)
 
 
 class RadiatorValve:
 
-    def __init__(self, mac_address: str, cli: aioesphomeapi.APIClient):
+    def __init__(self, mac_address: str, cli: aioesphomeapi.APIClient, on_temperature=35, off_temperature=7):
         self.cli = cli
         self.mac_address_int = RadiatorValve.mac_to_int(mac_address)
         self.mac_str = mac_address
         self.max_tries = 5
         self.log = logging.getLogger("radiator-valve")
+        self.off_temperature = off_temperature
+        self.on_temperature = on_temperature
 
         self.current_packet_number = 0
-        self.current_comfort_temp = 0
+        self.current_comfort_temp_dec = 0
         self.current_resp = []
         self.received_response_event = asyncio.Event()
         self.got_response_for_current_temp = False
         self.got_packet_number = False
-        self.current_mode = 0
+        self.read_mode = 0
         self.attempt_delay = 6
         self.expected_length = 0
 
@@ -38,12 +40,12 @@ class RadiatorValve:
 
     def reset(self):
         self.current_packet_number = 0
-        self.current_comfort_temp = 0
+        self.current_comfort_temp_dec = 0
         self.current_resp = []
         self.received_response_event = asyncio.Event()
         self.got_response_for_current_temp = False
         self.got_packet_number = False
-        self.current_mode = 0
+        self.read_mode = 0
         self.attempt_delay = 6
         self.expected_length = 0
 
@@ -65,7 +67,7 @@ class RadiatorValve:
             0x00  # placeholder for size
         ]
 
-        to_send.extend([function_byte, 0x00,0x00])
+        to_send.extend([function_byte, 0x00, 0x00])
 
         self.current_packet_number += 1
         to_send.append(self.current_packet_number)
@@ -101,19 +103,20 @@ class RadiatorValve:
 
             await asyncio.sleep(0.5)
 
-        raise TimeoutError("Error while trying to sync packet number / max tries exceeded")
+        raise TimeoutError("Error while trying to sync packet number / max tries exceeded", self.mac_str)
 
     async def read_current_temperature(self):
         READ_TEMPERATURE_FUNCTION_CODE = 0x0C
         self.log.info(f"[{self.mac_str}] Trying to read current temperature")
         ret = await self.ble_send_and_wait_response(READ_TEMPERATURE_FUNCTION_CODE)
         if ret:
-            self.got_response_for_current_temp = True
-            self.log.info(f"[{self.mac_str}] Current mode = {self.current_mode}\n"
-                          f" current_packet_number {self.current_packet_number}\n"
-                          f" current comfort temp {self.current_comfort_temp / 10} °C")
+            if self.got_response_for_current_temp:
+                self.log.info(f"[{self.mac_str}] Current mode = {self.read_mode} -"
+                              f" Current comfort temp = {self.current_comfort_temp_dec / 10} °C")
+            else:
+                raise RuntimeError("Bad packet sequencing (received a response to the wrong packet", self.mac_str)
         else:
-            raise RuntimeError("Error while trying to read current temperature / max tries exceeded")
+            raise RuntimeError("Error while trying to read current temperature", self.mac_str)
 
     async def write_comfort_mode(self):
         COMFORT_MODE = 0x01
@@ -130,23 +133,41 @@ class RadiatorValve:
                0x00,
                0x00,
                0x00,
-               self.current_mode]
+               self.read_mode]
         await self.ble_send_and_wait_response(function_byte=0x01, payload=bytearray(msg))
 
     async def write_open_closed(self, desired_state):
+        WRITE_TEMPERATURE_FUNCTION_CODE = 0x0C
+
+        def get_high_low_temperature_bytes(setpoint: int):
+            low = (setpoint * 10 % 256) & 0xff
+            high = int(setpoint * 10 / 256) & 0xff
+            return low, high
 
         if desired_state:
-            low = (350 % 256) & 255
-            high = (int(350 / 256)) & 255
-            self.log.info(f"[{self.mac_str}] Setting temperature to 35 °C")
+            written_temperature = self.on_temperature
         else:
-            low = 70 & 255
-            high = 0x00
-            self.log.info(f"[{self.mac_str}] Setting temperature to 7 °C")
+            written_temperature = self.off_temperature
+
+        setpoint_bytes = get_high_low_temperature_bytes(written_temperature)
 
         # set comfort temperature
-        msg = bytearray([low, high, low, high, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
-        await self.ble_send_and_wait_response(function_byte=0x0C, payload=msg)
+        msg = bytearray([
+            setpoint_bytes[0],
+            setpoint_bytes[1],
+            setpoint_bytes[0],
+            setpoint_bytes[1],
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+
+        await self.ble_send_and_wait_response(function_byte=WRITE_TEMPERATURE_FUNCTION_CODE,
+                                              payload=msg)
+
+        # Read temperature verification
+        await self.read_current_temperature()
+        assert int(self.current_comfort_temp_dec) == int(written_temperature*10), \
+            f"[{self.mac_str}] Readback of written temperature KO (Read {self.current_comfort_temp_dec}  / Expected {written_temperature*10})"
+        self.log.info(f"[{self.mac_str}] Readback of written temperature OK ({written_temperature} °C)")
+
 
     async def set_state(self, desired_state):
         try_number = 0
@@ -154,7 +175,7 @@ class RadiatorValve:
 
         while try_number < self.max_tries:
 
-            self.log.info(f"[{self.mac_str}]  set_state [{try_number}/{self.max_tries}]")
+            self.log.info(f"[{self.mac_str}] set_state [Try {try_number}/{self.max_tries}]")
             try_number += 1
             try:
                 self.current_packet_number = 1
@@ -178,12 +199,15 @@ class RadiatorValve:
                 await asyncio.sleep(0.1)
                 await self.write_comfort_mode()
                 await asyncio.sleep(0.1)
+
                 await self.write_open_closed(desired_state)
                 await asyncio.sleep(0.1)
+
+
                 await self.cli.bluetooth_device_disconnect(self.mac_address_int)
                 await asyncio.sleep(0.1)
 
-                self.log.info(f"[{self.mac_str}]  Operation Complete")
+                self.log.info(f"[{self.mac_str}] Operation Complete! :)")
 
                 return True
 
@@ -192,14 +216,6 @@ class RadiatorValve:
                 await asyncio.sleep(self.attempt_delay)
                 continue
 
-    def set_mode(self, mode):
-        self.current_mode = mode
-
-    def set_current_packet_number(self, pkt_number):
-        self.current_packet_number = pkt_number
-
-    def set_current_comfort_temperature(self, current_comfort_temp):
-        self.current_comfort_temp = current_comfort_temp
 
     def on_bluetooth_gatt_notify(self, size_array, value):
 
@@ -229,18 +245,11 @@ class RadiatorValve:
 
         received_checksum = self.current_resp[response_length - 1]
         expected_checksum = self.calculate_checksum(self.current_resp[0:response_length - 1])
-        self.log.debug("-- Checksums --\n"
-                       f"Received: {received_checksum}\n"
-                       f"Expected: {expected_checksum}\n"
-                       f"-- Pkt. Number --\n"
-                       f"Received: {self.current_resp[6]}\n"
-                       f"Expected: {self.current_packet_number}\n")
+        self.log.debug(f"Checksum Received: {received_checksum}/Expected: {expected_checksum} --- "
+                       f"Pkt. Number Received: {self.current_resp[6]}/Expected: {self.current_packet_number}")
 
         final = self.current_resp[0:3]
-
-        cut = [i for i in self.current_resp[3:] if i != 0x55]
-
-        final.extend(cut)
+        final.extend([i for i in self.current_resp[3:] if i != 0x55])
 
         current_resp = final
         if expected_checksum != received_checksum:
@@ -249,17 +258,15 @@ class RadiatorValve:
         if current_resp[3] != 255 and current_resp[4] != 255:
             # se è un pacchetto di risposta a un comando 0x01, 0x00, 0x00 (first group)
             if current_resp[3] == 0x01 and current_resp[4] == 0x00 and current_resp[5] == 0x00:
-                self.set_mode(current_resp[response_length - 2])
-                self.set_current_packet_number(current_resp[6])
+                self.read_mode = current_resp[response_length - 2]
+                self.current_packet_number = current_resp[6]
                 self.got_packet_number = True
 
-            if not self.got_response_for_current_temp and len(current_resp) >= 9 and current_resp[
-                6] == self.current_packet_number - 1 and \
+            if len(current_resp) >= 9 and current_resp[6] == self.current_packet_number and \
                     current_resp[3] == 0x0C and current_resp[4] == 0x00 and current_resp[5] == 0x00:
-                current_comfort_temp = current_resp[8] * 256 + current_resp[7]
-                self.set_current_comfort_temperature(current_comfort_temp)
-                self.set_current_packet_number(current_resp[6])
-                self.received_response_event.set()
+                current_comfort_temp = (current_resp[8] << 8) + current_resp[7]
+                self.current_comfort_temp_dec = current_comfort_temp
+                self.got_response_for_current_temp = True
         else:
             self.log.error(f"[{self.mac_str}] Bad Data Received")
 
@@ -280,7 +287,7 @@ class RadiatorValve:
     def mac_to_int(mac):
         res = re.match('^((?:(?:[0-9a-f]{2}):){5}[0-9a-f]{2})$', mac.lower())
         if res is None:
-            raise ValueError('invalid mac address')
+            raise ValueError('invalid mac address', mac)
         return int(res.group(0).replace(':', ''), 16)
 
     def get_next_packet_number(self):
