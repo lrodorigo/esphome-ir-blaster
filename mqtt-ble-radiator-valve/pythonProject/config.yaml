@@ -1,0 +1,27 @@
+mqtt:
+    host: localhost
+    port: 1883
+
+bluetooth_proxies:
+    - hostname: soggiorno
+      enabled: true
+    - hostname: camera
+      enabled: true
+
+# Exposed on HA
+radiator_valve_switches:
+    - name: termosifone_soggiorno
+      mac_address: aa:bb:cc:dd:ee
+      bluetooth_proxies:
+          - soggiorno
+          - camera
+
+# Exposed on HA
+mqtt_thermostats:
+    - name: soggiorno
+      heather: switches.termosifone_soggiorno
+      target_sensor: sensors.soggiorno_temperature
+      keep_alive: 1800 # send a command to the radiator_valve each 30 min
+
+
+

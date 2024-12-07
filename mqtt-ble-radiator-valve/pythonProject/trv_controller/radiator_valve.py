@@ -7,7 +7,6 @@ import aioesphomeapi
 from aioesphomeapi import BluetoothLEAdvertisement
 
 WRITE_CHARACTERISTIC_UUID = "0000ffe9-0000-1000-8000-00805f9b34fb"
-logging.basicConfig(level=logging.DEBUG, datefmt='%Y-%m-%d %H:%M:%S')
 logging.getLogger("aioesphomeapi").setLevel(logging.WARNING)
 
 
@@ -22,7 +21,7 @@ class RadiatorValve:
         self.off_temperature = off_temperature
         self.on_temperature = on_temperature
 
-        self.current_packet_number = 0
+        self.current_packet_number = 1
         self.current_comfort_temp_dec = 0
         self.current_resp = []
         self.received_response_event = asyncio.Event()
@@ -69,7 +68,6 @@ class RadiatorValve:
 
         to_send.extend([function_byte, 0x00, 0x00])
 
-        self.current_packet_number += 1
         to_send.append(self.current_packet_number)
         to_send.extend(payload)  # FIXME: 0xAA Bytestuffing required here
         to_send[2] = len(to_send)
@@ -204,7 +202,6 @@ class RadiatorValve:
                 await self.write_open_closed(desired_state)
                 await asyncio.sleep(0.1)
 
-
                 await self.cli.bluetooth_device_disconnect(self.mac_address_int)
                 await asyncio.sleep(0.1)
 
@@ -296,7 +293,7 @@ class RadiatorValve:
 
 
 async def main():
-    cli = aioesphomeapi.APIClient("192.168.1.222",
+    cli = aioesphomeapi.APIClient("pavoni-caffe",
                                   6053,
                                   None)
     await cli.connect(login=True)
