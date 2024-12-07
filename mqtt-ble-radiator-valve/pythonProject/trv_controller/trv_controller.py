@@ -38,6 +38,10 @@ class RadiatorValveSwitchManager:
         # await client.publish(availability_topic, "online", qos=1, retain=True)
 
     async def run(self):
+
+        # TODO: Add a list[aioesphome.ApiClient], one for each bluetooth proxy, and try to keep all
+        #       the TCP connections opened
+
         async with Client(self.config["mqtt"]["host"],
                           self.config["mqtt"].get("port", 1883)) as client:
 
@@ -73,6 +77,7 @@ class RadiatorValveSwitchManager:
             self.log.warning(f"Unknown proxy hostname {proxy_name} for device {switch['name']}")
             return
 
+        # TODO: grab the right ApiClient, create a RadiatorValve object and call the setState method on it.
 
 
 async def run(config_path):
