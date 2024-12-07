@@ -16,12 +16,13 @@ radiator_valve_switches:
           - soggiorno
           - camera
 
-# Exposed on HA
-mqtt_thermostats:
-    - name: soggiorno
-      heather: switches.termosifone_soggiorno
-      target_sensor: sensors.soggiorno_temperature
-      keep_alive: 1800 # send a command to the radiator_valve each 30 min
+# I am not sure if it is possible to expose thermostats entities from MQTT autodiscovery
+
+#mqtt_thermostats:
+#    - name: soggiorno
+#      heather: switches.termosifone_soggiorno
+#      target_sensor: sensors.soggiorno_temperature
+#      keep_alive: 1800 # send a command to the radiator_valve each 30 min
 
 
 
