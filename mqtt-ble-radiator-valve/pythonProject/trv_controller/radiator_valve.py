@@ -282,12 +282,15 @@ class RadiatorValve:
         return checksum
 
     @staticmethod
-    def mac_to_int(mac):
+    def  mac_to_int(mac):
         res = re.match('^((?:(?:[0-9a-f]{2}):){5}[0-9a-f]{2})$', mac.lower())
         if res is None:
             raise ValueError('invalid mac address', mac)
         return int(res.group(0).replace(':', ''), 16)
 
+    @staticmethod
+    def int_to_mac(mac_int):
+        return ':'.join(f'{(mac_int >> (8 * i)) & 0xFF:02x}' for i in reversed(range(6)))
 
 
 async def main():

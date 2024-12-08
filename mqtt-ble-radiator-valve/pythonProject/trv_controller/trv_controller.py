@@ -1,8 +1,7 @@
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
-from signal import signal
+import time
 
 import aioesphomeapi
 import yaml
@@ -15,8 +14,6 @@ from trv_controller.radiator_valve import RadiatorValve
 
 
 class RadiatorValveSwitchManager:
-    from enum import Enum
-
     DISCOVERY_PREFIX = "homeassistant"
     DEVICE_TOPIC_PREFIX = "ble_radiator_valve"
 
@@ -38,6 +35,10 @@ class RadiatorValveSwitchManager:
         self.pending_commands_task_group = asyncio.TaskGroup()
         self.proxy_api_clients: dict[str, aioesphomeapi.APIClient] = dict()
         self.proxy_api_clients_busy: dict[str, bool] = dict()
+        self.valve_last_seen: dict[str, float] = dict()
+
+        self.valves_rssi_map: dict[str, dict[str, int]] = dict()  # dict(valve_mac, dict(hostname, rssi))
+
         self.valves = self.config.get("radiator_valve_switches", [])
 
     def _valve_state_topic(self, valve: dict):
@@ -46,25 +47,31 @@ class RadiatorValveSwitchManager:
     def _valve_command_topic(self, valve: dict):
         return f"{self.DEVICE_TOPIC_PREFIX}/{valve['name']}/set"
 
+    def _valve_availability_topic(self, valve):
+        return f"{self.DEVICE_TOPIC_PREFIX}/{valve['name']}/online"
+
+    def _valve_attributes_topic(self, valve):
+        return f"{self.DEVICE_TOPIC_PREFIX}/{valve['name']}/attributes"
+
     async def _publish_discovery(self, client, valve):
         device_id = f"radiator_valve_{valve['name']}"
         self.log.info(f"Publishing discovery data for {device_id}")
-        topic = f"{self.DISCOVERY_PREFIX}/valve/{device_id}/config"
-        availability_topic = f"{device_id}/availability"
 
         payload = {
             "name": "on_of",
             "unique_id": f"{device_id}",
             "state_topic": self._valve_state_topic(valve),
             "command_topic": self._valve_command_topic(valve),
-            # "availability": [{"topic": availability_topic}],
+            "availability": [{"topic": self._valve_availability_topic(valve)}],
+            "json_attributes_topic": self._valve_attributes_topic(valve),
             "device": {
                 "identifiers": [valve['mac_address']],
                 # "connections": ["mac", valve['mac_address']], # just for diag
                 "name": f"Radiator Valve {valve['name']}",
             }
         }
-        await client.publish(topic=topic, payload=json.dumps(payload))
+
+        await client.publish(topic=f"{self.DISCOVERY_PREFIX}/valve/{device_id}/config", payload=json.dumps(payload))
         # await asyncio.sleep(1)
         # await client.publish(availability_topic, "online", qos=1, retain=True)
 
@@ -73,7 +80,7 @@ class RadiatorValveSwitchManager:
         async with self.connections_manager_task_group as connection_tasks:
             async with self.pending_commands_task_group as command_tasks:
                 self._start_proxies_connection_manager()
-
+                connection_tasks.create_task(self._valve_availability_monitoring_task())
                 async with Client(self.config["mqtt"]["host"],
                                   self.config["mqtt"].get("port", 1883)) as client:
                     self.mqtt_client = client
@@ -82,11 +89,18 @@ class RadiatorValveSwitchManager:
                         await self._publish_discovery(client, valve)
 
                     await client.subscribe(f"{self.DEVICE_TOPIC_PREFIX}/+/set")
+                    await client.subscribe(f"{self.DISCOVERY_PREFIX}/online")
 
                     async for message in client.messages:
-                        device_name = str(message.topic).split("/")[1]
-                        turn_on = message.payload.decode().lower() in ["true", "1", "on", "open"]
-                        await self._handle_command(device_name, turn_on)
+
+                        if message.topic.matches(f"{self.DEVICE_TOPIC_PREFIX}/+/set"):
+                            device_name = str(message.topic).split("/")[1]
+                            turn_on = message.payload.decode().lower() in ["true", "1", "on", "open"]
+                            await self._handle_command(device_name, turn_on)
+
+                        elif message.topic.matches(f"{self.DEVICE_TOPIC_PREFIX}/online"):
+                            for valve in self.valves:
+                                await self._publish_discovery(client, valve)
 
     async def _handle_command(self, device_name: str, turn_on: bool):
         found_valve = next(
@@ -129,7 +143,26 @@ class RadiatorValveSwitchManager:
                                       password=proxy.get("password", ""))
 
         def _on_ble_adv(adv: BluetoothLERawAdvertisementsResponse):
-            pass
+            if "vanne" not in adv.name.lower():
+                return
+            mac = RadiatorValve.int_to_mac(adv.address)
+            valve = next((valve for valve in self.valves if valve["mac_address"].lower() == mac.lower()), None)
+            if valve is None:
+                return
+            resend_online_states = not self._valve_is_online(mac)
+            self.valve_last_seen[mac] = time.time()
+            if resend_online_states:
+                asyncio.get_running_loop().create_task(self._publish_online_state(valve))
+
+            self.log.debug(f"[Proxy {hostname}] Listened beacon for {valve['name']} - Rssi: {adv.rssi} dBm")
+
+            self.valves_rssi_map.setdefault(valve['name'], dict())
+            self.valves_rssi_map[valve['name']].setdefault(hostname, adv.rssi)
+
+            # Smooth the RSSI value
+            self.valves_rssi_map[valve['name']][hostname] = 0.97 * self.valves_rssi_map[valve['name']][hostname] + 0.03 * adv.rssi
+
+            asyncio.get_running_loop().create_task(self._publish_attributes(valve))
 
         async def _on_connect() -> None:
             try:
@@ -175,6 +208,24 @@ class RadiatorValveSwitchManager:
     async def _update_ha_valve_state(self, valve: dict, is_on: bool):
         await self.mqtt_client.publish(self._valve_state_topic(valve), "open" if is_on else "closed")
 
+    async def _valve_availability_monitoring_task(self):
+        await asyncio.sleep(300)
+        for valve in self.valves:
+            await self._publish_online_state(valve)
+
+    async def _publish_online_state(self, valve: dict):
+        mac = valve["mac_address"].lower()
+        if self._valve_is_online(mac):
+            await self.mqtt_client.publish(self._valve_availability_topic(valve), "online", retain=True)
+        else:
+            await self.mqtt_client.publish(self._valve_availability_topic(valve), "offline", retain=True)
+
+    def _valve_is_online(self, mac: str) -> bool:
+        return (mac in self.valve_last_seen and
+                time.time() - self.valve_last_seen[mac] < 60 * 5)
+
+    async def _publish_attributes(self, valve: dict):
+        await self.mqtt_client.publish(self._valve_availability_topic(valve), json.dumps(self.valves_rssi_map[valve['name']]))
 
 async def run(config_path):
     with open(config_path, "r") as file:
