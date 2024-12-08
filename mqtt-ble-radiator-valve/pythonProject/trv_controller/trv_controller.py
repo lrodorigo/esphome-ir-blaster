@@ -92,8 +92,6 @@ class RadiatorValveSwitchManager:
         async with self.connections_manager_task_group as connection_tasks:
             async with self.pending_commands_task_group:
 
-                self.mqtt_client = None
-
                 # start the connection manager for the multiple ESP home connections
                 self._start_proxies_connection_manager()
 
@@ -103,6 +101,8 @@ class RadiatorValveSwitchManager:
                 while not self.exited.is_set(): # Main MQTT loop
                     try:
                         # broker connection
+                        self.mqtt_client = None
+
                         async with Client(self.config["mqtt"]["host"],
                                           self.config["mqtt"].get("port", 1883)) as client:
                             self.log.info("MQTT Connected")
