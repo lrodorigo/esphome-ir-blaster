@@ -225,7 +225,10 @@ class RadiatorValveSwitchManager:
                 time.time() - self.valve_last_seen[mac] < 60 * 5)
 
     async def _publish_attributes(self, valve: dict):
-        await self.mqtt_client.publish(self._valve_availability_topic(valve), json.dumps(self.valves_rssi_map[valve['name']]))
+        attributes_map = dict()
+        for key,value in self.valves_rssi_map[valve['name']].items():
+            attributes_map[f"{key} RSSI"] = str(int(value)) + " dBm"
+        await self.mqtt_client.publish(self._valve_attributes_topic(valve), json.dumps(attributes_map))
 
 async def run(config_path):
     with open(config_path, "r") as file:
