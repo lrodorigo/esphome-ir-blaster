@@ -185,11 +185,13 @@ class RadiatorValve:
                                                         address_type=0
                                                         )
 
-                await self.cli.bluetooth_gatt_start_notify(self.mac_address_int,
-                                                           handle=48,
-                                                           on_bluetooth_gatt_notify=
-                                                           lambda size, array: self.on_bluetooth_gatt_notify(size,
-                                                                                                             array))
+                callback_remove1, callback_remove2 = await self.cli.bluetooth_gatt_start_notify(self.mac_address_int,
+                                                                                                handle=48,
+                                                                                                on_bluetooth_gatt_notify=
+                                                                                                lambda size,
+                                                                                                       array: self.on_bluetooth_gatt_notify(
+                                                                                                    size,
+                                                                                                    array))
 
                 await self.sync_packet_number()
                 await asyncio.sleep(0.1)
@@ -203,6 +205,9 @@ class RadiatorValve:
 
                 await self.cli.bluetooth_device_disconnect(self.mac_address_int)
                 await asyncio.sleep(0.1)
+
+                await callback_remove1()
+                callback_remove2()
 
                 self.log.info(f"[{self.mac_str}] Operation Complete! :)")
 
@@ -282,7 +287,7 @@ class RadiatorValve:
         return checksum
 
     @staticmethod
-    def  mac_to_int(mac):
+    def mac_to_int(mac):
         res = re.match('^((?:(?:[0-9a-f]{2}):){5}[0-9a-f]{2})$', mac.lower())
         if res is None:
             raise ValueError('invalid mac address', mac)

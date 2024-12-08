@@ -183,7 +183,6 @@ class RadiatorValveSwitchManager:
         self.proxy_api_clients[hostname] = cli
 
         try:
-            # Build reconnect logic
             reconnect_logic = ReconnectLogic(
                 client=cli,
                 on_connect=_on_connect,
@@ -192,12 +191,9 @@ class RadiatorValveSwitchManager:
                 name="",
                 on_connect_error=_on_connect_error,
             )
+
             await reconnect_logic.start()
-
-            # self.log.info(f"[Proxy {hostname}] Api Version: {cli.address}")
-
             await self.exited.wait()
-
             await cli.disconnect()
 
             del self.proxy_api_clients[hostname]

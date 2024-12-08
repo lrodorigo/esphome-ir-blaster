@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import time
 from sys import argv
 
 from trv_controller import trv_controller
