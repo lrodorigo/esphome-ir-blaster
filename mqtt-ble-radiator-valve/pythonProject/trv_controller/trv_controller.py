@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -73,8 +74,8 @@ class RadiatorValveSwitchManager:
         self.log.info(f"Publishing discovery data for {device_id}")
 
         payload = {
-            "name": "on_of",
             "unique_id": f"{device_id}",
+            "object_id": f"{device_id}",
             "state_topic": self._valve_state_topic(valve),
             "command_topic": self._valve_command_topic(valve),
             "availability": [{"topic": self._valve_availability_topic(valve)}],
@@ -88,9 +89,10 @@ class RadiatorValveSwitchManager:
         await client.publish(topic=f"{self.DISCOVERY_PREFIX}/valve/{device_id}/config", payload=json.dumps(payload))
 
     async def run(self):
-
         async with self.connections_manager_task_group as connection_tasks:
-            async with self.pending_commands_task_group as command_tasks:
+            async with self.pending_commands_task_group:
+
+                self.mqtt_client = None
 
                 # start the connection manager for the multiple ESP home connections
                 self._start_proxies_connection_manager()
@@ -98,31 +100,37 @@ class RadiatorValveSwitchManager:
                 # start the task that periodically publishes the valves online status
                 connection_tasks.create_task(self._valve_availability_monitoring_task())
 
-                # broker connection
-                async with Client(self.config["mqtt"]["host"],
-                                  self.config["mqtt"].get("port", 1883)) as client:
-                    self.mqtt_client = client
+                while not self.exited.is_set(): # Main MQTT loop
+                    try:
+                        # broker connection
+                        async with Client(self.config["mqtt"]["host"],
+                                          self.config["mqtt"].get("port", 1883)) as client:
+                            self.log.info("MQTT Connected")
+                            self.mqtt_client = client
 
-                    # publish the discovery message such that home-assistant will create the valve entity,
-                    # for each registered valve
-                    for valve in self.valves:
-                        await self._publish_discovery(client, valve)
-
-                    await client.subscribe(f"{self.DEVICE_TOPIC_PREFIX}/+/set")
-                    await client.subscribe(f"{self.DISCOVERY_PREFIX}/online")
-
-                    async for message in client.messages:
-
-                        # mqtt valve set command received
-                        if message.topic.matches(f"{self.DEVICE_TOPIC_PREFIX}/+/set"):
-                            device_name = str(message.topic).split("/")[1]
-                            turn_on = message.payload.decode().lower() in ["true", "1", "on", "open"]
-                            await self._handle_command(device_name, turn_on)
-
-                        # homeassistant is just born, resend the initial discovery message (like a retained)
-                        elif message.topic.matches(f"{self.DEVICE_TOPIC_PREFIX}/online"):
+                            # publish the discovery message such that home-assistant will create the valve entity,
+                            # for each registered valve
                             for valve in self.valves:
                                 await self._publish_discovery(client, valve)
+
+                            await client.subscribe(f"{self.DEVICE_TOPIC_PREFIX}/+/set")
+                            await client.subscribe(f"{self.DISCOVERY_PREFIX}/status")
+
+                            async for message in client.messages:
+
+                                # mqtt valve set command received
+                                if message.topic.matches(f"{self.DEVICE_TOPIC_PREFIX}/+/set"):
+                                    device_name = str(message.topic).split("/")[1]
+                                    turn_on = message.payload.decode().lower() in ["true", "1", "on", "open"]
+                                    await self._handle_command(device_name, turn_on)
+
+                                # homeassistant is just born, resend the initial discovery message (like a retained)
+                                elif message.topic.matches(f"{self.DISCOVERY_PREFIX}/status"):
+                                    for valve in self.valves:
+                                        await self._publish_discovery(client, valve)
+                    except Exception as ex:
+                        self.log.exception("Exception in MQTT loop, restarting in 10s: ")
+                        await asyncio.sleep(10)
 
     async def _handle_command(self, device_name: str, turn_on: bool):
         found_valve = next(
@@ -169,6 +177,7 @@ class RadiatorValveSwitchManager:
 
         cli = aioesphomeapi.APIClient(proxy["hostname"],
                                       proxy.get("port", 6053),
+                                      keepalive=30.0/4.5,     # consider the device connection dead after 30s
                                       password=proxy.get("password", ""))
 
         def _on_ble_adv(adv: BluetoothLERawAdvertisementsResponse):
@@ -209,6 +218,7 @@ class RadiatorValveSwitchManager:
             try:
                 self.log.info(f"[Proxy {hostname}] ESPHome client connected")
                 cli.subscribe_bluetooth_le_advertisements(_on_ble_adv)
+                self.proxy_api_clients[hostname] = cli
             except APIConnectionError as err:
                 self.log.warning(f"[Proxy {hostname}] ESPHome client connection error")
                 await cli.disconnect()
@@ -220,8 +230,6 @@ class RadiatorValveSwitchManager:
         async def _on_connect_error(err: Exception) -> None:
             """Run disconnect stuff on API disconnect."""
             self.log.exception(f"[Proxy {hostname}] - Connection Error: ")
-
-        self.proxy_api_clients[hostname] = cli
 
         try:
             reconnect_logic = ReconnectLogic(
@@ -243,25 +251,40 @@ class RadiatorValveSwitchManager:
             self.log.exception(f"[Proxy {hostname}]  Exception in _proxy_connection_manager: ")
 
     async def _update_ha_valve_state(self, valve: dict, is_on: bool):
+        if not self.mqtt_client:
+            return
         await self.mqtt_client.publish(self._valve_state_topic(valve), "open" if is_on else "closed")
 
     async def _valve_availability_monitoring_task(self):
-        await asyncio.sleep(300)
-        for valve in self.valves:
-            await self._publish_online_state(valve)
+        while True:
+            try:
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(self.exited.wait(), 30)
+
+                if self.exited.is_set():
+                    return
+
+                for valve in self.valves:
+                    await self._publish_online_state(valve)
+            except Exception as ex:
+                self.log.exception("Error in _valve_availability_monitoring_task: ")
 
     async def _publish_online_state(self, valve: dict):
+        if not self.mqtt_client:
+            return
         mac = valve["mac_address"].lower()
-        if self._valve_is_online(mac):
-            await self.mqtt_client.publish(self._valve_availability_topic(valve), "online", retain=True)
-        else:
-            await self.mqtt_client.publish(self._valve_availability_topic(valve), "offline", retain=True)
+        await self.mqtt_client.publish(self._valve_availability_topic(valve),
+                                       "online" if self._valve_is_online(mac) else "offline",
+                                       retain=True)
 
     def _valve_is_online(self, mac: str) -> bool:
         return (mac in self.valve_last_seen and
-                time.time() - self.valve_last_seen[mac] < 60 * 5)
+                time.time() - self.valve_last_seen[mac] < 60)
 
     async def _publish_attributes(self, valve: dict):
+        if not self.mqtt_client:
+            return
+
         attributes_map = dict()
         for key, value in self.valves_rssi_map[valve['name']].items():
             attributes_map[f"{key} RSSI"] = str(int(value)) + " dBm"

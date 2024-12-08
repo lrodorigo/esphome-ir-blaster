@@ -31,13 +31,13 @@ class RadiatorValve:
         self.attempt_delay = 6
         self.expected_length = 0
 
-        self.reset()
+        self._reset()
 
-    def on_ble_state(self, connected: bool, mtu: int, error: int) -> None:
+    def _on_ble_state(self, connected: bool, mtu: int, error: int) -> None:
         # print(connected)
         pass
 
-    def reset(self):
+    def _reset(self):
         self.current_packet_number = 0
         self.current_comfort_temp_dec = 0
         self.current_resp = []
@@ -48,16 +48,16 @@ class RadiatorValve:
         self.attempt_delay = 6
         self.expected_length = 0
 
-    async def receive_event_wait(self, timeout=10):
+    async def _receive_event_wait(self, timeout=10):
         await self.received_response_event.wait()
         out = self.received_response_event.is_set()
         self.received_response_event.clear()
         return out
 
-    async def ble_send_and_wait_response(self,
-                                         function_byte: int,
-                                         payload: bytearray = None,
-                                         response_timeout: int = 10):
+    async def _ble_send_and_wait_response(self,
+                                          function_byte: int,
+                                          payload: bytearray = None,
+                                          response_timeout: int = 10):
         if payload is None:
             payload = bytearray()
 
@@ -82,18 +82,19 @@ class RadiatorValve:
         await self.cli.bluetooth_gatt_write(address=self.mac_address_int,
                                             handle=46,
                                             data=bytes(to_send),
-                                            response=True, timeout=10)
+                                            response=True,
+                                            timeout=10)
 
-        ret = await self.receive_event_wait(response_timeout)
+        ret = await self._receive_event_wait(response_timeout)
         return ret
 
-    async def sync_packet_number(self):
+    async def _sync_packet_number(self):
         SYNC_PACKET_FUNCTION_CODE = 0x01
         _try = 0
-        while _try < 10:
+        while _try < 255:
             _try += 1
             self.log.info(f"[{self.mac_str}] Trying to get pkt number {_try}/10")
-            ret = await self.ble_send_and_wait_response(SYNC_PACKET_FUNCTION_CODE)
+            ret = await self._ble_send_and_wait_response(SYNC_PACKET_FUNCTION_CODE)
             if ret:
                 if self.got_packet_number:
                     self.log.info(f"[{self.mac_str}] Got Packet Number = {self.current_packet_number}")
@@ -101,14 +102,14 @@ class RadiatorValve:
                 else:
                     self.log.debug(f"[{self.mac_str}] Packet Number Mismatch - increasing and retrying")
 
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.1)
 
         raise TimeoutError("Error while trying to sync packet number / max tries exceeded", self.mac_str)
 
-    async def read_current_temperature(self):
+    async def _read_current_temperature(self):
         READ_TEMPERATURE_FUNCTION_CODE = 0x0C
         self.log.info(f"[{self.mac_str}] Trying to read current temperature")
-        ret = await self.ble_send_and_wait_response(READ_TEMPERATURE_FUNCTION_CODE)
+        ret = await self._ble_send_and_wait_response(READ_TEMPERATURE_FUNCTION_CODE)
         if ret:
             if self.got_response_for_current_temp:
                 self.log.info(f"[{self.mac_str}] Current mode = {self.read_mode} -"
@@ -118,7 +119,7 @@ class RadiatorValve:
         else:
             raise RuntimeError("Error while trying to read current temperature", self.mac_str)
 
-    async def write_comfort_mode(self):
+    async def _write_comfort_mode(self):
         COMFORT_MODE = 0x01
         SET_KEY_LOCK = 0x01
 
@@ -135,9 +136,9 @@ class RadiatorValve:
                0x00,
                0x00,
                self.read_mode]
-        await self.ble_send_and_wait_response(function_byte=0x01, payload=bytearray(msg))
+        await self._ble_send_and_wait_response(function_byte=0x01, payload=bytearray(msg))
 
-    async def write_open_closed(self, desired_state):
+    async def _write_open_closed(self, desired_state):
         WRITE_TEMPERATURE_FUNCTION_CODE = 0x0C
 
         def get_high_low_temperature_bytes(setpoint: int):
@@ -160,54 +161,57 @@ class RadiatorValve:
             setpoint_bytes[1],
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
 
-        await self.ble_send_and_wait_response(function_byte=WRITE_TEMPERATURE_FUNCTION_CODE,
-                                              payload=msg)
+        await self._ble_send_and_wait_response(function_byte=WRITE_TEMPERATURE_FUNCTION_CODE,
+                                               payload=msg)
 
         # Read temperature verification
-        await self.read_current_temperature()
+        await self._read_current_temperature()
         assert int(self.current_comfort_temp_dec) == int(written_temperature * 10), \
             f"[{self.mac_str}] Readback of written temperature KO (Read {self.current_comfort_temp_dec}  / Expected {written_temperature * 10})"
         self.log.info(f"[{self.mac_str}] Readback of written temperature OK ({written_temperature} °C)")
 
+    async def _init_ble_connection(self) -> tuple:
+        await self.cli.bluetooth_device_connect(self.mac_address_int,
+                                                self._on_ble_state,
+                                                timeout=10,
+                                                disconnect_timeout=10,
+                                                address_type=0
+                                                )
+
+        callback_remove1, callback_remove2 = \
+            await self.cli.bluetooth_gatt_start_notify(self.mac_address_int,
+                                                       handle=48,
+                                                       on_bluetooth_gatt_notify=
+                                                       lambda size, array: self.on_bluetooth_gatt_notify(
+                                                           size,
+                                                           array))
+
+        await self._sync_packet_number()
+
+        return callback_remove1, callback_remove2
+
     async def set_state(self, desired_state):
         try_number = 0
-        self.reset()
+        self._reset()
 
         while try_number < self.max_tries:
 
             self.log.info(f"[{self.mac_str}] set_state [Try {try_number}/{self.max_tries}]")
             try_number += 1
             try:
-                await self.cli.bluetooth_device_connect(self.mac_address_int,
-                                                        self.on_ble_state,
-                                                        timeout=30,
-                                                        disconnect_timeout=10,
-                                                        address_type=0
-                                                        )
-
-                callback_remove1, callback_remove2 = await self.cli.bluetooth_gatt_start_notify(self.mac_address_int,
-                                                                                                handle=48,
-                                                                                                on_bluetooth_gatt_notify=
-                                                                                                lambda size,
-                                                                                                       array: self.on_bluetooth_gatt_notify(
-                                                                                                    size,
-                                                                                                    array))
-
-                await self.sync_packet_number()
+                callback_remove1, callback_remove2 = await self._init_ble_connection()
                 await asyncio.sleep(0.1)
-                await self.read_current_temperature()
+                await self._read_current_temperature()
                 await asyncio.sleep(0.1)
-                await self.write_comfort_mode()
+                await self._write_comfort_mode()
                 await asyncio.sleep(0.1)
 
-                await self.write_open_closed(desired_state)
+                await self._write_open_closed(desired_state)
                 await asyncio.sleep(0.1)
 
                 await self.cli.bluetooth_device_disconnect(self.mac_address_int)
-                await asyncio.sleep(0.1)
-
                 await callback_remove1()
-                callback_remove2()
+                await asyncio.sleep(0.1)
 
                 self.log.info(f"[{self.mac_str}] Operation Complete! :)")
 
@@ -219,6 +223,26 @@ class RadiatorValve:
                 continue
 
         return False
+
+    async def read_current_temperature(self) -> float | None:
+        try_number = 0
+        self._reset()
+
+        while try_number < self.max_tries:
+            try:
+                try_number += 1
+                callback_remove1, callback_remove2 = await self._init_ble_connection()
+                await asyncio.sleep(0.1)
+                await self._read_current_temperature()
+                await self.cli.bluetooth_device_disconnect(self.mac_address_int)
+                await callback_remove1()
+
+                return self.current_comfort_temp_dec / 10.0
+            except Exception as e:
+                self.log.exception(f"Exception in read_current_temperature (attempt: {try_number}/{self.max_tries})")
+                await asyncio.sleep(self.attempt_delay)
+
+        return None
 
     def on_bluetooth_gatt_notify(self, size_array, value):
 
