@@ -3,18 +3,16 @@ mqtt:
     port: 1883
 
 bluetooth_proxies:
-    - hostname: soggiorno
-      enabled: true
-    - hostname: camera
+    - hostname: esp32-c3-super-mini
       enabled: true
 
 # Exposed on HA
 radiator_valve_switches:
-    - name: termosifone_soggiorno
-      mac_address: aa:bb:cc:dd:ee
-      bluetooth_proxies:
-          - soggiorno
-          - camera
+
+    - name: studio # MQTT Command will be "ble_radiator_valve/{name}/set"
+      mac_address: 62:00:A1:1E:C1:1F
+      bluetooth_proxies: # a sorted (priority) list of the proxies used to reach the BLE valve
+          - esp32-c3-super-mini
 
 # I am not sure if it is possible to expose thermostats entities from MQTT autodiscovery
 

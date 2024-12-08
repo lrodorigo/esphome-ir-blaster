@@ -21,7 +21,7 @@ class RadiatorValve:
         self.off_temperature = off_temperature
         self.on_temperature = on_temperature
 
-        self.current_packet_number = 1
+        self.current_packet_number = 0
         self.current_comfort_temp_dec = 0
         self.current_resp = []
         self.received_response_event = asyncio.Event()
@@ -67,6 +67,8 @@ class RadiatorValve:
         ]
 
         to_send.extend([function_byte, 0x00, 0x00])
+
+        self.current_packet_number += 1
 
         to_send.append(self.current_packet_number)
         to_send.extend(payload)  # FIXME: 0xAA Bytestuffing required here
@@ -163,10 +165,9 @@ class RadiatorValve:
 
         # Read temperature verification
         await self.read_current_temperature()
-        assert int(self.current_comfort_temp_dec) == int(written_temperature*10), \
-            f"[{self.mac_str}] Readback of written temperature KO (Read {self.current_comfort_temp_dec}  / Expected {written_temperature*10})"
+        assert int(self.current_comfort_temp_dec) == int(written_temperature * 10), \
+            f"[{self.mac_str}] Readback of written temperature KO (Read {self.current_comfort_temp_dec}  / Expected {written_temperature * 10})"
         self.log.info(f"[{self.mac_str}] Readback of written temperature OK ({written_temperature} °C)")
-
 
     async def set_state(self, desired_state):
         try_number = 0
@@ -177,8 +178,6 @@ class RadiatorValve:
             self.log.info(f"[{self.mac_str}] set_state [Try {try_number}/{self.max_tries}]")
             try_number += 1
             try:
-                self.current_packet_number = 1
-
                 await self.cli.bluetooth_device_connect(self.mac_address_int,
                                                         self.on_ble_state,
                                                         timeout=30,
@@ -214,6 +213,7 @@ class RadiatorValve:
                 await asyncio.sleep(self.attempt_delay)
                 continue
 
+        return False
 
     def on_bluetooth_gatt_notify(self, size_array, value):
 
@@ -288,12 +288,10 @@ class RadiatorValve:
             raise ValueError('invalid mac address', mac)
         return int(res.group(0).replace(':', ''), 16)
 
-    def get_next_packet_number(self):
-        return self.current_packet_number
 
 
 async def main():
-    cli = aioesphomeapi.APIClient("pavoni-caffe",
+    cli = aioesphomeapi.APIClient("esp32-c3-super-mini",
                                   6053,
                                   None)
     await cli.connect(login=True)
