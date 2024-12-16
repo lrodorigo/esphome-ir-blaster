@@ -98,13 +98,16 @@ class RadiatorValveSwitchManager:
                 # start the task that periodically publishes the valves online status
                 connection_tasks.create_task(self._valve_availability_monitoring_task())
 
-                while not self.exited.is_set(): # Main MQTT loop
+                while not self.exited.is_set():  # Main MQTT loop
                     try:
                         # broker connection
                         self.mqtt_client = None
 
                         async with Client(self.config["mqtt"]["host"],
-                                          self.config["mqtt"].get("port", 1883)) as client:
+                                          self.config["mqtt"].get("port", 1883),
+                                          username=self.config["mqtt"].get('username'),
+                                          password=self.config["mqtt"].get('password'),
+                                          ) as client:
                             self.log.info("MQTT Connected")
                             self.mqtt_client = client
 
@@ -177,8 +180,9 @@ class RadiatorValveSwitchManager:
 
         cli = aioesphomeapi.APIClient(proxy["hostname"],
                                       proxy.get("port", 6053),
-                                      keepalive=30.0/4.5,     # consider the device connection dead after 30s
-                                      password=proxy.get("password", ""))
+                                      keepalive=30.0 / 4.5,  # consider the device connection dead after 30s
+                                      password=proxy.get("password", ""),
+                                      noise_psk=proxy.get("noise_psk", None))
 
         def _on_ble_adv(adv: BluetoothLERawAdvertisementsResponse):
             """

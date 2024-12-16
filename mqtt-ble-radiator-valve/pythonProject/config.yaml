@@ -1,17 +1,26 @@
 mqtt:
-    host: localhost
+    host: homeassistant.local
     port: 1883
+    username: valves
+    password: valving
 
 bluetooth_proxies:
-    - hostname: esp32-c3-super-mini
+    - hostname: ble-proxy-studio
       enabled: true
+      noise_psk: "DC6zTTJi72nYz8b+pRH2tDtGVT2WhyOZZx+RyRJ0rQI="
+    - hostname: esphome-web-2fb678
+      enabled: true
+      noise_psk: "Bh8kcr+L6jTIYqDCFyEZs3BSm799krrl8yQOW4Nz4MA="
+
+
 # Exposed on HA
 radiator_valve_switches:
 
     - name: studio # MQTT Command will be "ble_radiator_valve/{name}/set"
-      mac_address: 62:00:A1:1E:C1:1F
+      mac_address: 62:00:A1:1E:C1:11
       bluetooth_proxies: # a sorted (priority) list of the proxies used to reach the BLE valve
-          - esp32-c3-super-mini
+          - ble-proxy-studio
+          - esphome-web-2fb678
 
 
 # I am not sure if it is possible to expose thermostats entities from MQTT autodiscovery

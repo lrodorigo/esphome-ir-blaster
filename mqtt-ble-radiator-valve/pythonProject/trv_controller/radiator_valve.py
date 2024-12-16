@@ -323,7 +323,7 @@ class RadiatorValve:
 
 
 async def main():
-    cli = aioesphomeapi.APIClient("esp32-c3-super-mini",
+    cli = aioesphomeapi.APIClient("ble-proxy-studio",
                                   6053,
                                   None)
     await cli.connect(login=True)
